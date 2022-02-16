@@ -113,8 +113,12 @@ const int readPin = 3;
 const int operationInProgressPin = LED_BUILTIN;
 
 // Anzahl der Leader-Pulses
-const int numberOfSyncBits = 6000;
+const int numberOfSyncBits = 20000;
 
+//    ___
+//  __ ! __
+// _________
+// Bei Anpassung müssen die Error Schranken und waitTimeOnReadStartup neu ermittelt werden!
 const float speedfactor = 2.25; // Geschwindigkeitsmultiplikator zum Lesen und Schreiben, beeinflusst die Pulszeiten (2,25 scheint recht zuverlässig zu sein -> Zum verlängern erhöhen, zum verringern vermindern)
 
 // Pulszeiten Short Puls und Fehlerschranken (µs)
@@ -139,7 +143,7 @@ const unsigned long longPulseErrorShort = 3100;
 const unsigned long longPulseErrorLong = 3250;
 
 // Zeit bis Lesevorgang startet -> Normalisierung des Kasettenlaufs & Einschwingen des Leaders (ms)
-const unsigned long waitTimeOnReadStartup = 5000;
+const unsigned long waitTimeOnReadStartup = 8000;
 
 // Zeit bis zum Beenden der Übertragung beim Lesen, nachdem kein neues Byte empfangen wurde (ms)
 const unsigned long transmissionOverTime = 500; 
