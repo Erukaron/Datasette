@@ -101,6 +101,8 @@ Dass das erste Byte diesen Wert hat, ist kein Zufall: Der erste Datenblock begin
  */
 
 #define VERBOSE_MODE
+//#define DEBUG_READ_PULSE_TIMES // Zeigt Phasenzeiten an
+//#define DEBUG_READ_PULSE_TIMES_ADJUSTED // Zeigt bereinigte Phasenzeiten an
 
 // Schreibe-Pins
 const int halfBridgePositivePin = 11;
@@ -120,30 +122,33 @@ const int numberOfSyncBits = 20000;
 // _________
 // Bei Anpassung müssen die Error Schranken und waitTimeOnReadStartup neu ermittelt werden!
 const float speedfactor = 2.25; // Geschwindigkeitsmultiplikator zum Lesen und Schreiben, beeinflusst die Pulszeiten (2,25 scheint recht zuverlässig zu sein -> Zum verlängern erhöhen, zum verringern vermindern)
+const float errorModifierLow  = 0.03;
+const float errorModifierHigh = 0.07;
 
 // Pulszeiten Short Puls und Fehlerschranken (µs)
 // Die Lese-Zeit ist doppelt so lang, wie die Schreibzeit, weil ein Puls aus einem HIGH-Signal der Pulszeit und einem LOW-Signal der Pulszeit besteht. Zum Lesen wird entsprechend die doppelte Pulszeit benötigt.
 const unsigned long shortPulseWrite = 175*speedfactor;
 const unsigned long shortPulse = shortPulseWrite*2;
-const unsigned long shortPulseErrorShort = 760;
-const unsigned long shortPulseErrorLong = 840;
+const unsigned long shortPulseErrorShort = shortPulse * (1 - errorModifierLow);
+const unsigned long shortPulseErrorLong  = shortPulse * (1 + errorModifierHigh);
 
 // Pulszeiten Medium Puls und Fehlerschranken (µs)
 // Die Lese-Zeit ist doppelt so lang, wie die Schreibzeit, weil ein Puls aus einem HIGH-Signal der Pulszeit und einem LOW-Signal der Pulszeit besteht. Zum Lesen wird entsprechend die doppelte Pulszeit benötigt.
 const unsigned long mediumPulseWrite = 350*speedfactor;
 const unsigned long mediumPulse = mediumPulseWrite*2;
-const unsigned long mediumPulseErrorShort = 1540;
-const unsigned long mediumPulseErrorLong = 1660;
+const unsigned long mediumPulseErrorShort = mediumPulse * (1 - errorModifierLow / 2);
+const unsigned long mediumPulseErrorLong  = mediumPulse * (1 + errorModifierHigh);
 
 // Pulszeiten Medium Puls und Fehlerschranken (µs)
 // Die Lese-Zeit ist doppelt so lang, wie die Schreibzeit, weil ein Puls aus einem HIGH-Signal der Pulszeit und einem LOW-Signal der Pulszeit besteht. Zum Lesen wird entsprechend die doppelte Pulszeit benötigt.
 const unsigned long longPulseWrite = 700*speedfactor;
 const unsigned long longPulse = longPulseWrite*2;
-const unsigned long longPulseErrorShort = 3100;
-const unsigned long longPulseErrorLong = 3250;
+const unsigned long longPulseErrorShort = longPulse * (1 - errorModifierLow / 3);
+const unsigned long longPulseErrorLong  = longPulse * (1 + errorModifierHigh / 2);
 
 // Zeit bis Lesevorgang startet -> Normalisierung des Kasettenlaufs & Einschwingen des Leaders (ms)
-const unsigned long waitTimeOnReadStartup = 8000;
+//                                                                         µs->ms  Hälfte der Zeit warten
+const unsigned long waitTimeOnReadStartup = numberOfSyncBits * shortPulse / 1000 / 2;
 
 // Zeit bis zum Beenden der Übertragung beim Lesen, nachdem kein neues Byte empfangen wurde (ms)
 const unsigned long transmissionOverTime = 500; 
@@ -170,8 +175,14 @@ volatile bool newByte = false; // Gibt an, ob das Interrupt ein neues Byte berei
 volatile int bitNumber = 7; // Gibt an, an welcher Bit-Position eines Bytes das Interrupt grade ist (von MSB zu LSB)
 volatile char byteValue = 0; // Gibt den Byte-Wert des letzten empfangenen Bytes an (nur valide, falls newByte = true)
 
+#ifdef DEBUG_READ_PULSE_TIMES
+  const int maxPulseTimes = 500;
+  volatile unsigned short pulseTimes[maxPulseTimes];
+  volatile int currentPulseTime = 0;
+#endif
+
 void setup() {
-  Serial.begin(57600); // Möglichst schnelle Übertragung, damit zeitkritische Funktionen nicht zu lange warten müssen
+  Serial.begin(1000000); // Möglichst schnelle Übertragung, damit zeitkritische Funktionen nicht zu lange warten müssen
 
   pinMode(halfBridgePositivePin, OUTPUT);
   pinMode(halfBridgeNegativePin, OUTPUT);
@@ -183,6 +194,33 @@ void setup() {
   delay(100);
 
   #ifdef VERBOSE_MODE
+    Serial.println("Time µs:low|act|high");
+    Serial.print("Short:");
+    Serial.print(shortPulseErrorShort);
+    Serial.print("|");
+    Serial.print(shortPulse);
+    Serial.print("|");
+    Serial.println(shortPulseErrorLong);
+    Serial.print("Medium:");
+    Serial.print(mediumPulseErrorShort);
+    Serial.print("|");
+    Serial.print(mediumPulse);
+    Serial.print("|");
+    Serial.println(mediumPulseErrorLong);
+    Serial.print("Long:");
+    Serial.print(longPulseErrorShort);
+    Serial.print("|");
+    Serial.print(longPulse);
+    Serial.print("|");
+    Serial.println(longPulseErrorLong);
+    Serial.print("Leader bits:");
+    Serial.println(numberOfSyncBits);
+    Serial.print("Read wait ms:");
+    Serial.println(waitTimeOnReadStartup);
+    Serial.print("Transmission over ms:");
+    Serial.println(transmissionOverTime);
+    Serial.print("Avg. b/s:");
+    Serial.println(1 / (((((float)(longPulse + mediumPulse)) + ((float)(shortPulse + mediumPulse)) * 8) / 8) / 1000000));
     Serial.println("r for read, w<Text> for write, c for clear.");
   #endif
 }
@@ -423,12 +461,26 @@ void DataIn()
       if (lastIntFinished)
       {
         unsigned long bitTime = interruptTimes[2] - interruptTimes[0];
+        
+#ifdef DEBUG_READ_PULSE_TIMES
+#ifndef DEBUG_READ_PULSE_TIMES_ADJUSTED
+        if (leaderFinished)
+          ProcessPulseTime(bitTime);
+#endif        
+#endif
 
         // Pruefe Fehlerschranken
         if (   ( (bitTime > shortPulseErrorShort)  && (bitTime < shortPulseErrorLong)  )
             || ( (bitTime > mediumPulseErrorShort) && (bitTime < mediumPulseErrorLong) )
             || ( (bitTime > longPulseErrorShort)   && (bitTime < longPulseErrorLong)   ) )
         {
+#ifdef DEBUG_READ_PULSE_TIMES
+#ifdef DEBUG_READ_PULSE_TIMES_ADJUSTED
+        if (leaderFinished)
+          ProcessPulseTime(bitTime);
+#endif        
+#endif
+          
           // Start next marker
           interruptTimes[0] = interruptStartTime; // End of one interrupt is the start of the next one
           lastIntFinished = false;
@@ -512,11 +564,35 @@ void DataIn()
   }
 }
 
-// Gibt den Fehler im String s mit der Kennzeichnung E aus.
-void error(String s)
+#ifdef DEBUG_READ_PULSE_TIMES
+void ProcessPulseTime(unsigned short bitTime)
 {
-  #ifdef VERBOSE_MODE
-    Serial.print("E");
-    Serial.println(s);
-  #endif
+  detachInterrupt(digitalPinToInterrupt(readPin));
+
+  if (currentPulseTime < maxPulseTimes)
+  {
+    // Add to array
+    pulseTimes[currentPulseTime++] = bitTime;
+  }
+  else
+  {
+    // Display values
+    for (int i = 0; i < maxPulseTimes; i++)
+    {
+      // If not in range
+      if ( !(    ( (bitTime > shortPulseErrorShort)  && (bitTime < shortPulseErrorLong)  )
+              || ( (bitTime > mediumPulseErrorShort) && (bitTime < mediumPulseErrorLong) )
+              || ( (bitTime > longPulseErrorShort)   && (bitTime < longPulseErrorLong)   ) ) )
+      {
+        Serial.print("!!!");
+      }
+
+      Serial.println(pulseTimes[i]);
+    }
+
+    currentPulseTime = 0;
+  }
+
+  attachInterrupt(digitalPinToInterrupt(readPin), DataIn, CHANGE);
 }
+#endif
